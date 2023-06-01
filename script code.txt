@@ -1,0 +1,366 @@
+#include <QApplication>
+#include <QMainWindow>
+#include <QPushButton>
+#include <QLineEdit>
+#include <QVBoxLayout>
+#include <QTextEdit>
+#include <QLabel>
+#include <QString>
+
+#include <libssh/libssh.h>
+#include <iostream>
+#include <string>
+#include <filesystem> // Required for file system operations
+#include <windows.h> // Required for digital signature functions
+#include <wintrust.h> // Required for digital signature functions
+#include <softpub.h> // Required for digital signature functions
+
+bool checkDllAuthenticity(const std::string& dllPath) {
+    // This function will check the authenticity of the DLL file located at dllPath 
+    // This is done by checking the digital signature of the DLL file
+
+    WINTRUST_FILE_INFO fileInfo = {0};
+    fileInfo.cbStruct = sizeof(WINTRUST_FILE_INFO);
+    fileInfo.pcwszFilePath = dllPath.c_str();
+    fileInfo.hFile = NULL;
+    fileInfo.pgKnownSubject = NULL;
+
+    WINTRUST_DATA trustData = {0};
+    trustData.cbStruct = sizeof(WINTRUST_DATA);
+    trustData.pPolicyCallbackData = NULL;
+    trustData.pSIPClientData = NULL;
+    trustData.dwUIChoice = WTD_UI_NONE;
+    trustData.fdwRevocationChecks = WTD_REVOKE_NONE;
+    trustData.dwUnionChoice = WTD_CHOICE_FILE;
+    trustData.dwStateAction = WTD_STATEACTION_VERIFY;
+    trustData.hWVTStateData = NULL;
+    trustData.pwszURLReference = NULL;
+    trustData.dwUIContext = 0;
+    trustData.pFile = &fileInfo;
+
+    GUID pgActionID = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    LONG status = WinVerifyTrust(NULL, &pgActionID, &trustData);
+
+    // Clean up
+    trustData.dwStateAction = WTD_STATEACTION_CLOSE;
+
+    return status == ERROR_SUCCESS;
+}
+
+void checkDllInjection(ssh_session session) {
+    ssh_channel channel = ssh_channel_new(session);
+    if (channel == NULL) return;
+    
+    int rc = ssh_channel_open_session(channel);
+    if (rc != SSH_OK)
+    {
+        ssh_channel_free(channel);
+        return;
+    }
+
+    // Define the directories from where Zoom loads DLL files
+    std::vector<std::string> dllDirectories = {
+        "/current_working_directory/",
+        "/windows_system_directory/",
+        "/zoom_installation_directory/"
+    };
+
+    for (const auto& directory : dllDirectories) {
+        for (const auto & entry : std::filesystem::directory_iterator(directory)) {
+            if (!checkDllAuthenticity(entry.path().string())) {
+                std::cout << "Potential DLL Injection Detected: " << entry.path() << std::endl;
+                break;
+            }
+        }
+    }
+
+    ssh_channel_send_eof(channel);
+    ssh_channel_close(channel);
+    ssh_channel_free(channel);
+}
+
+void checkSoftwareVersion(ssh_session session) {
+    ssh_channel channel = ssh_channel_new(session);
+    if (channel == NULL) return;
+    
+    int rc = ssh_channel_open_session(channel);
+    if (rc != SSH_OK)
+    {
+        ssh_channel_free(channel);
+        return;
+    }
+
+    rc = ssh_channel_request_exec(channel, "software --version");
+    char buffer[256];
+    int nbytes = ssh_channel_read(channel, buffer, sizeof(buffer), 0);
+    
+    if(nbytes > 0) {
+        std::string version(buffer);
+        if(version < "1.0.0") {
+            std::cout << "Vulnerable software version detected: " << version << std::endl;
+        } else {
+            std::cout << "Software version is up to date: " << version << std::endl;
+        }
+    }
+    
+    ssh_channel_send_eof(channel);
+    ssh_channel_close(channel);
+    ssh_channel_free(channel);
+}
+
+void checkUpdateServer(ssh_session session) {
+    ssh_channel channel = ssh_channel_new(session);
+    if (channel == NULL) return;
+    
+    int rc = ssh_channel_open_session(channel);
+    if (rc != SSH_OK)
+    {
+        ssh_channel_free(channel);
+        return;
+    }
+
+    rc = ssh_channel_request_exec(channel, "get-update-server");
+    char buffer[256];
+    int nbytes = ssh_channel_read(channel, buffer, sizeof(buffer), 0);
+    
+    if(nbytes > 0) {
+        std::string updateServer(buffer);
+        if(!updateServer.starts_with("https://")) {
+            std::cout << "Update server does not use HTTPS: " << updateServer << std::endl;
+        } else {
+            std::cout << "Update server uses HTTPS: " << updateServer << std::endl;
+        }
+    }
+    
+    ssh_channel_send_eof(channel);
+    ssh_channel_close(channel);
+    ssh_channel_free(channel);
+}
+
+void checkAudioEncryption(ssh_session session) {
+    ssh_channel channel = ssh_channel_new(session);
+    if (channel == NULL) return;
+    
+    int rc = ssh_channel_open_session(channel);
+    if (rc != SSH_OK)
+    {
+        ssh_channel_free(channel);
+        return;
+    }
+
+    rc = ssh_channel_request_exec(channel, "get-audio-encryption");
+    char buffer[256];
+    int nbytes = ssh_channel_read(channel, buffer, sizeof(buffer), 0);
+    
+    if(nbytes > 0) {
+        std::string encryptionProtocol(buffer);
+        if(encryptionProtocol != "AES") {
+            std::cout << "Vulnerable audio encryption protocol detected: " << encryptionProtocol << std::endl;
+        } else {
+            std::cout << "Audio encryption protocol is secure: " << encryptionProtocol << std::endl;
+        }
+    }
+    
+    ssh_channel_send_eof(channel);
+    ssh_channel_close(channel);
+    ssh_channel_free(channel);
+}
+
+void checkEndToEndEncryption(ssh_session session) {
+    ssh_channel channel = ssh_channel_new(session);
+    if (channel == NULL) return;
+    
+    int rc = ssh_channel_open_session(channel);
+    if (rc != SSH_OK)
+    {
+        ssh_channel_free(channel);
+        return;
+    }
+
+    rc = ssh_channel_request_exec(channel, "get-end-to-end-encryption");
+    char buffer[256];
+    int nbytes = ssh_channel_read(channel, buffer, sizeof(buffer), 0);
+    
+    if(nbytes > 0) {
+        std::string encryptionProtocol(buffer);
+        if(encryptionProtocol != "AES-256") {
+            std::cout << "Vulnerable end-to-end encryption protocol detected: " << encryptionProtocol << std::endl;
+        } else {
+            std::cout << "End-to-end encryption protocol is secure: " << encryptionProtocol << std::endl;
+        }
+    }
+    
+    ssh_channel_send_eof(channel);
+    ssh_channel_close(channel);
+    ssh_channel_free(channel);
+}
+
+void checkUserPrivileges(ssh_session session, QTextEdit* output) {
+    ssh_channel channel = ssh_channel_new(session);
+    if (channel == NULL) return;
+
+    int rc = ssh_channel_open_session(channel);
+    if (rc != SSH_OK)
+    {
+        ssh_channel_free(channel);
+        return;
+    }
+
+    rc = ssh_channel_request_exec(channel, "whoami");
+    char buffer[256];
+    int nbytes = ssh_channel_read(channel, buffer, sizeof(buffer), 0);
+
+    if(nbytes > 0) {
+        std::string currentUser(buffer);
+        if(currentUser == "root\n") {
+            output->append("Warning: The remote work software is running as a high-privilege user (root).");
+        } else {
+            output->append("The remote work software is running as a user: " + QString::fromStdString(currentUser));
+        }
+    }
+
+    ssh_channel_send_eof(channel);
+    ssh_channel_close(channel);
+    ssh_channel_free(channel);
+}
+
+class MainWindow : public QMainWindow
+{
+    Q_OBJECT
+
+public:
+    MainWindow(QWidget *parent = nullptr) : QMainWindow(parent)
+    {
+        QWidget *centralWidget = new QWidget(this);
+        QVBoxLayout *layout = new QVBoxLayout(centralWidget);
+        centralWidget->setLayout(layout);
+        setCentralWidget(centralWidget);
+
+        QLabel *hostLabel = new QLabel("Enter hostname:", this);
+        layout->addWidget(hostLabel);
+
+        QLineEdit *hostnameInput = new QLineEdit(this);
+        layout->addWidget(hostnameInput);
+
+        QLabel *userLabel = new QLabel("Enter username:", this);
+        layout->addWidget(userLabel);
+
+        QLineEdit *usernameInput = new QLineEdit(this);
+        layout->addWidget(usernameInput);
+
+        QLabel *passLabel = new QLabel("Enter password:", this);
+        layout->addWidget(passLabel);
+
+        QLineEdit *passwordInput = new QLineEdit(this);
+        passwordInput->setEchoMode(QLineEdit::Password);
+        layout->addWidget(passwordInput);
+
+        QPushButton *button = new QPushButton("Check security", this);
+        layout->addWidget(button);
+
+        QPushButton *dllInjectionButton = new QPushButton("Check DLL Injection Vulnerability", this);
+        layout->addWidget(dllInjectionButton);
+
+        QTextEdit *output = new QTextEdit(this);
+        output->setReadOnly(true);
+        layout->addWidget(output);
+
+        connect(button, &QPushButton::clicked, [=]() {
+            std::string hostname = hostnameInput->text().toStdString();
+            std::string username = usernameInput->text().toStdString();
+            std::string password = passwordInput->text().toStdString();
+
+            ssh_session session = ssh_new();
+            if (session == NULL) exit(-1);
+
+            ssh_options_set(session, SSH_OPTIONS_HOST, hostname.c_str());
+
+            int rc = ssh_connect(session);
+            if (rc != SSH_OK) {
+                ssh_free(session);
+                exit(-1);
+            }
+
+            rc = ssh_userauth_password(session, username.c_str(), password.c_str());
+            if (rc != SSH_AUTH_SUCCESS) {
+                ssh_disconnect(session);
+                ssh_free(session);
+                exit(-1);
+            } 
+             connect(button, &QPushButton::clicked, [=]() {
+            std::string hostname = hostnameInput->text().toStdString();
+            std::string username = usernameInput->text().toStdString();
+            std::string password = passwordInput->text().toStdString();
+
+            ssh_session session = ssh_new();
+            if (session == NULL) exit(-1);
+
+            ssh_options_set(session, SSH_OPTIONS_HOST, hostname.c_str());
+
+            int rc = ssh_connect(session);
+            if (rc != SSH_OK) {
+                ssh_free(session);
+                exit(-1);
+            }
+
+            rc = ssh_userauth_password(session, username.c_str(), password.c_str());
+            if (rc != SSH_AUTH_SUCCESS) {
+                ssh_disconnect(session);
+                ssh_free(session);
+                exit(-1);
+            }
+
+            // The following lines perform security checks and display the corresponsing results
+            checkSoftwareVersion(session);
+            checkUpdateServer(session);
+            checkAudioEncryption(session);
+            checkEndToEndEncryption(session);
+            checkUserPrivileges(session, output);
+
+            // Cleaning up the SSH session
+            ssh_disconnect(session);
+            ssh_free(session);
+        });
+
+        connect(dllInjectionButton, &QPushButton::clicked, [=]() {
+            std::string hostname = hostnameInput->text().toStdString();
+            std::string username = usernameInput->text().toStdString();
+            std::string password = passwordInput->text().toStdString();
+
+            ssh_session session = ssh_new();
+            if (session == NULL) exit(-1);
+
+            ssh_options_set(session, SSH_OPTIONS_HOST, hostname.c_str());
+
+            int rc = ssh_connect(session);
+            if (rc != SSH_OK) {
+                ssh_free(session);
+                exit(-1);
+            }
+
+            rc = ssh_userauth_password(session, username.c_str(), password.c_str());
+            if (rc != SSH_AUTH_SUCCESS) {
+                ssh_disconnect(session);
+                ssh_free(session);
+                exit(-1);
+            }
+
+            // Following line checks for DLL injection vulnerability 
+            checkDllInjection(session);
+
+            // Clean up the SSH session
+            ssh_disconnect(session);
+            ssh_free(session);
+        });
+    }
+};
+
+int main(int argc, char *argv[])
+{
+    QApplication app(argc, argv);
+
+    MainWindow window;
+    window.show();
+
+    return app.exec();
+}
